@@ -1,7 +1,6 @@
-
 use std::sync::{Arc, Mutex};
 
-use rmp_serde::decode;
+use rmp_serde::Serializer;
 
 use crate::state_machine::StateMachine;
 use crate::storage::Storage;
@@ -39,7 +38,7 @@ impl Logs {
         while *commit_index < *self.last_applied.lock().unwrap() {
             *self.last_applied.lock().unwrap() += 1;
             self.state_machine.lock().unwrap().apply(
-                decode(
+                Serializer::new(
                     &self
                         .entry(*self.last_applied.lock().unwrap())
                         .unwrap()
