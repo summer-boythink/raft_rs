@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 
+use crate::logs::{LogEntry, Logs};
 use crate::rpc::Peer;
 
 #[derive(Clone)]
@@ -12,6 +13,12 @@ enum RaftStatus {
     Follower,
     Candidate,
     Leader,
+}
+
+pub struct Config {
+    rpc_timeout: u32,
+    heartbeat_timeout: Duration,
+    heartbeat_interval: u32,
 }
 
 pub struct Raft {
@@ -22,13 +29,13 @@ pub struct Raft {
     status: Arc<Mutex<RaftStatus>>,
     heartbeat_timeout: Duration,
     logs: Logs,
-    peers: HashMap<u32, dyn Peer>,
+    peers: HashMap<u32, Box<dyn Peer>>,
     config: Config,
     commit_emitter: HashMap<u32, Vec<oneshot::Sender<()>>>,
 }
 
 impl Raft {
-    pub fn new(id: u32, logs: Logs, peers: HashMap<u32, Peer>, config: Config) -> Self {
+    pub fn new(id: u32, logs: Logs, peers: HashMap<u32, Box<dyn Peer>>, config: Config) -> Self {
         Self {
             leader_id: None,
             id,
@@ -45,12 +52,7 @@ impl Raft {
 }
 
 #[derive(Serialize, Deserialize)]
-struct LogEntry {
-    // ...
-}
-
-#[derive(Serialize, Deserialize)]
-struct AppendEntriesArgs {
+pub struct AppendEntriesArgs {
     // leader term
     term: u32,
     // leader id
@@ -66,13 +68,13 @@ struct AppendEntriesArgs {
 }
 
 #[derive(Serialize, Deserialize)]
-struct AppendEntriesReply {
+pub struct AppendEntriesReply {
     term: u32,
     success: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-struct RequestVoteArgs {
+pub struct RequestVoteArgs {
     term: u32,
     candidate_id: u32,
     last_log_index: u32,
@@ -80,7 +82,7 @@ struct RequestVoteArgs {
 }
 
 #[derive(Serialize, Deserialize)]
-struct RequestVoteReply {
+pub struct RequestVoteReply {
     term: u32,
     vote_granted: bool,
 }

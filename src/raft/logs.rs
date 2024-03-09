@@ -1,26 +1,27 @@
-use std::sync::{Arc, Mutex};
-
 use rmp_serde::Serializer;
+use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 
 use crate::state_machine::StateMachine;
 use crate::storage::Storage;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LogEntry {
-    log_index: u32,
-    log_term: u32,
-    command: String,
+    pub log_index: u32,
+    pub log_term: u32,
+    pub command: String,
 }
 
 pub struct Logs {
-    store: dyn Storage,
+    store: Box<dyn Storage>,
     state_machine: Arc<Mutex<dyn StateMachine>>,
     commit_index: Arc<Mutex<u32>>,
     last_applied: Arc<Mutex<u32>>,
 }
 
 impl Logs {
-    pub fn new(store: dyn Storage, state_machine: Arc<Mutex<dyn StateMachine>>) -> Self {
+    pub fn new(store: Box<dyn Storage>, state_machine: Arc<Mutex<dyn StateMachine>>) -> Self {
         Self {
             store,
             state_machine,
@@ -37,15 +38,15 @@ impl Logs {
         let mut commit_index = self.commit_index.lock().unwrap();
         while *commit_index < *self.last_applied.lock().unwrap() {
             *self.last_applied.lock().unwrap() += 1;
-            self.state_machine.lock().unwrap().apply(
-                Serializer::new(
-                    &self
-                        .entry(*self.last_applied.lock().unwrap())
-                        .unwrap()
-                        .command,
-                )
-                .unwrap(),
-            );
+            let mut buf = Vec::new();
+            let command = self
+                .store
+                .entry(*self.last_applied.lock().unwrap())
+                .unwrap()
+                .command;
+            let mut serializer = Serializer::new(&mut buf);
+            serializer.into_inner().write(command.as_bytes());
+            self.state_machine.lock().unwrap().apply(buf);
         }
         *commit_index = index;
     }

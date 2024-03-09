@@ -1,11 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-#[derive(Clone)]
-pub struct LogEntry {
-    log_index: u32,
-    log_term: u32,
-    command: String,
-}
+use crate::logs::LogEntry;
 
 pub trait Storage {
     fn last_index(&self) -> u32;
