@@ -1,7 +1,6 @@
 use super::raft::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::io::{Error, ErrorKind};
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -26,44 +25,18 @@ pub struct HttpPeer {
     client: Client,
 }
 
-impl HttpPeer {
-    fn new(addr: String) -> Self {
-        Self {
-            addr,
-            client: Client::new(),
-        }
-    }
-
-    async fn post<T: Serialize, R: for<'de> Deserialize<'de>>(
-        &self,
-        method: &str,
-        req: &T,
-    ) -> Result<R, reqwest::Error> {
-        let resp = self
-            .client
-            .post(&format!("{}/{}", self.addr, method))
-            .json(req)
-            .send()
-            .await?
-            .json()
-            .await?;
-        Ok(resp)
-    }
-}
-
 impl Peer for HttpPeer {
     fn append_entries(
         &self,
         aea: AppendEntriesArgs,
         t: Duration,
     ) -> tokio::task::JoinHandle<Result<AppendEntriesReply, reqwest::Error>> {
-        let fut = self.post("append_entries", &aea);
-        let timed_fut = timeout(t, fut);
+        let addr = self.addr.clone();
+        let client = self.client.clone();
         tokio::spawn(async move {
-            timed_fut
-                .await
-                .map_err(|_| Error::new(ErrorKind::TimedOut, "operation timed out"))
-                .unwrap()
+            let fut = HttpPeer::post(&addr, &client, "request_vote", &aea);
+            let r = timeout(t, fut).await;
+            r.unwrap()
         })
     }
 
@@ -72,13 +45,30 @@ impl Peer for HttpPeer {
         rv: RequestVoteArgs,
         t: Duration,
     ) -> tokio::task::JoinHandle<Result<RequestVoteReply, reqwest::Error>> {
-        let fut = self.post("request_vote", &rv);
-        let timed_fut = timeout(t, fut);
+        let addr = self.addr.clone();
+        let client = self.client.clone();
         tokio::spawn(async move {
-            timed_fut
-                .await
-                .map_err(|_| Error::new(ErrorKind::TimedOut, "operation timed out"))
-                .unwrap()
+            let fut = HttpPeer::post(&addr, &client, "request_vote", &rv);
+            let r = timeout(t, fut).await;
+            r.unwrap()
         })
+    }
+}
+
+impl HttpPeer {
+    async fn post<T: Serialize, R: for<'de> Deserialize<'de>>(
+        addr: &str,
+        client: &Client,
+        method: &str,
+        req: &T,
+    ) -> Result<R, reqwest::Error> {
+        let resp = client
+            .post(&format!("{}/{}", addr, method))
+            .json(req)
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(resp)
     }
 }

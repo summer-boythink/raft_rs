@@ -44,7 +44,7 @@ impl Logs {
                 .entry(*self.last_applied.lock().unwrap())
                 .unwrap()
                 .command;
-            let mut serializer = Serializer::new(&mut buf);
+            let serializer = Serializer::new(&mut buf);
             serializer.into_inner().write(command.as_bytes());
             self.state_machine.lock().unwrap().apply(buf);
         }

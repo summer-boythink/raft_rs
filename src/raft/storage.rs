@@ -46,8 +46,8 @@ impl Storage for MemStorage {
             return;
         }
         let mut storage_entries = self.entries.lock().unwrap();
-        for e in entries {
-            storage_entries[e.log_index as usize] = e;
+        for e in entries.clone() {
+            storage_entries[e.log_index as usize] = e.clone();
         }
         let last_id = entries.last().unwrap().log_index;
         storage_entries.truncate((last_id + 1) as usize);
