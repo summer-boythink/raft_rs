@@ -56,6 +56,13 @@ impl Peer for HttpPeer {
 }
 
 impl HttpPeer {
+    pub fn new(addr: String) -> Self {
+        Self {
+            addr,
+            client: Client::new(),
+        }
+    }
+
     async fn post<T: Serialize, R: for<'de> Deserialize<'de>>(
         addr: &str,
         client: &Client,

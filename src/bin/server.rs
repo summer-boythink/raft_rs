@@ -1,6 +1,17 @@
-use std::{net::SocketAddr, str::FromStr, sync::{Arc, Mutex}};
-use raft_rs::{raft::raft::Raft, rpc::HttpPeer, state_machine::MemStateMachine};
+use raft_rs::{
+    logs::Logs,
+    raft::raft::{Config, Raft},
+    rpc::HttpPeer,
+    state_machine::MemStateMachine,
+    storage::MemStorage,
+};
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     extract::{Extension, Json, Path},
@@ -46,14 +57,15 @@ struct Args {
     heartbeat_interval: u32,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
 
     assert!(args.peer.len() >= 2, "at least 2 peers");
 
-    let local =  args.local;
-    let peers =  args.peer;
-    let rpc_timeout =  args.rpc_timeout;
+    let local = args.local;
+    let peers = args.peer;
+    let rpc_timeout = args.rpc_timeout;
     let heartbeat_timeout = args.heartbeat_timeout;
     let heartbeat_interval = args.heartbeat_interval;
 
@@ -63,24 +75,36 @@ fn main() {
     node_addr.sort();
 
     let mut id: usize = 0;
-    let mut peers = Vec::new();
-    
+    let mut peers = HashMap::new();
+
     for (i, addr) in node_addr.iter().enumerate() {
         if addr == &local {
             id = i;
         } else {
-            peers.push(HttpPeer::new(addr.clone()));
+            peers.insert(i as u32, HttpPeer::new(addr.clone()));
         }
     }
 
-    let stateMachine = MemStateMachine::new();
-
+    let state_machine = MemStateMachine::new();
+    let config = Config {
+        rpc_timeout,
+        heartbeat_timeout,
+        heartbeat_interval,
+    };
     httpServer(
-        Raft::new(id, logs, peers, config)
-        stateMachine,
-        addr
-    );
+        Raft::new(
+            id,
+            Logs::new(MemStorage::new(), state_machine),
+            peers,
+            config,
+        ),
+        state_machine,
+        addr,
+    )
+    .await;
+}
 
+async fn httpServer(config: Raft, state_machine: MemStateMachine, addr: SocketAddr) -> _ {
     let state = Arc::new(Mutex::new(User {
         id: 1337,
         username: "".to_string(),
@@ -88,17 +112,9 @@ fn main() {
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, World!" }))
-        .route("/users", post(create_user))
-        .layer(axum::AddExtensionLayer::new(state));
+        .route("/append_entries", post(create_user));
 
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
-}
-
-fn httpServer() -> _ {
-    todo!()
+    axum::serve(addr, app.into_make_service()).await.unwrap();
 }
 
 async fn create_user(
