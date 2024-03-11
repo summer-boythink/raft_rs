@@ -1,3 +1,3 @@
-pub mod raft;
+pub mod rafts;
 
-pub use raft::*;
+pub use rafts::*;

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-use crate::state_machine::StateMachine;
-use crate::storage::Storage;
+use crate::rafts::state_machine::StateMachine;
+use crate::rafts::storage::Storage;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LogEntry {

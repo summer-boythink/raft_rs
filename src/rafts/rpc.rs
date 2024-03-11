@@ -1,4 +1,4 @@
-use super::raft::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
+use super::args::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -13,7 +13,7 @@ pub trait Peer {
     ) -> tokio::task::JoinHandle<Result<AppendEntriesReply, reqwest::Error>>;
 
     // 请求投票
-    fn request_vote(
+    async fn request_vote(
         &self,
         rv: RequestVoteArgs,
         timeout: Duration,
@@ -40,7 +40,7 @@ impl Peer for HttpPeer {
         })
     }
 
-    fn request_vote(
+    async fn request_vote(
         &self,
         rv: RequestVoteArgs,
         t: Duration,

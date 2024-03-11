@@ -1,6 +1,6 @@
 use raft_rs::{
     logs::Logs,
-    raft::raft::{Config, Raft},
+    rafts::raft::{Config, Raft},
     rpc::HttpPeer,
     state_machine::MemStateMachine,
     storage::MemStorage,

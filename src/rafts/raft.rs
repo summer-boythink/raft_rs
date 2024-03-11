@@ -1,16 +1,19 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::{select, task, time};
+use tokio::task::JoinHandle;
+use tokio::{join, select, task, time};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant};
 
-use crate::logs::{LogEntry, Logs};
-use crate::rpc::Peer;
+use crate::rafts::logs::{LogEntry, Logs};
+use crate::rafts::rpc::Peer;
+use super::args::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
 
 use super::timeout::ResettableTimeout;
+use super::error::Result;
 
 #[derive(Clone, PartialEq)]
 enum RaftStatus {
@@ -20,9 +23,9 @@ enum RaftStatus {
 }
 
 pub struct Config {
-    pub rpc_timeout: u32,
+    pub rpc_timeout: Duration,
     pub heartbeat_timeout: Duration,
-    pub heartbeat_interval: u32,
+    pub heartbeat_interval: Duration,
 }
 
 pub struct Raft {
@@ -37,8 +40,8 @@ pub struct Raft {
     config: Config,
     commit_emitter: HashMap<u32, Vec<oneshot::Sender<()>>>,
     shutdown: UnboundedSender<bool>,
-    receive_shutdown: UnboundedReceiver<bool>,
-    receive_heartbeat: UnboundedReceiver<bool>,
+    receive_shutdown: Option<UnboundedReceiver<bool>>,
+    receive_heartbeat: Option<UnboundedReceiver<bool>>,
 }
 
 impl Raft {
@@ -60,8 +63,8 @@ impl Raft {
             config,
             commit_emitter: HashMap::new(),
             shutdown: shutdown_send,
-            receive_shutdown: shutdown_recv,
-            receive_heartbeat,
+            receive_shutdown: Some(shutdown_recv),
+            receive_heartbeat:Some(receive_heartbeat),
         }
     }
 
@@ -71,9 +74,9 @@ impl Raft {
     }
 
     async fn run(&mut self) {
-        let shutdown = self.receive_shutdown.recv();
+        let mut shutdown = self.receive_shutdown.take().unwrap();
         tokio::select! {
-            _ = shutdown => {
+            _ = shutdown.recv() => {
                 return;
             }
             _ = time::sleep(Duration::from_secs(1)) => {
@@ -95,9 +98,12 @@ impl Raft {
         );
         self.heartbeat_timeout.reset().await;
         while *(self.status.clone().lock().unwrap()) == RaftStatus::Follower {
+            let mut receive_shutdown = self.receive_shutdown.take().unwrap();
+            let mut receive_heartbeat = self.receive_heartbeat.take().unwrap();
+
             let r = select! {
-                _ = self.receive_heartbeat.recv() => "heartbeatTimeout",
-                _ = self.receive_shutdown.recv() => "shutdown",
+                _ = receive_heartbeat.recv() => "heartbeatTimeout",
+                _ = receive_shutdown.recv() => "shutdown",
             };
             match r {
                 "heartbeatTimeout" => *self.status.lock().unwrap() = RaftStatus::Candidate,
@@ -106,7 +112,6 @@ impl Raft {
             }
         }
     }
-
     async fn run_candidate(&mut self) {
         log::info!(
             "entering candidate state. id: {} term: {}",
@@ -114,22 +119,28 @@ impl Raft {
             self.current_term.lock().unwrap()
         );
         while *self.status.lock().unwrap() == RaftStatus::Candidate {
+            let mut shutdown = self.receive_shutdown.take().unwrap();
+            
+            let mut elect_result:Vec<RequestVoteReply> = vec![];
             let r = select! {
-                _ = self.elect_self() => "electSelf",
-                _ = self.receive_shutdown() => "shutdown",
+                elect_res = self.elect() => {
+                    elect_result = elect_res;
+                    "electSelf"
+                },
+                _ = shutdown.recv() => "shutdown",
             };
             match r {
                 "electSelf" => {
                     // 如果接收到大多数服务器的选票，那么就变成领导人
                     let mut granted_votes = 1;
                     let votes_needed = self.quorum_size();
-                    for vote in r.value {
-                        if vote.term > self.current_term {
+                    for vote in elect_result {
+                        if vote.term > *self.current_term.lock().unwrap() {
                             log::warn!(
                                 "[runCandidate] newer term discovered, fallback to follower",
                             );
                             *self.status.lock().unwrap() = RaftStatus::Follower;
-                            self.current_term = vote.term;
+                            *self.current_term.lock().unwrap() = vote.term;
                             return;
                         }
                         if vote.vote_granted {
@@ -149,10 +160,9 @@ impl Raft {
             }
         }
     }
-    async fn elect_self(&mut self) -> Vec<RequestVoteReply> {
-        // 在转变成候选人后就立即开始选举过程
-        // 自增当前的任期号（currentTerm）
-        // 给自己投票
+
+
+    pub async fn elect(&mut self) -> Vec<RequestVoteReply> {
         let mut current_term = self.current_term.lock().unwrap();
         *current_term += 1;
         let mut voted_for = self.voted_for.lock().unwrap();
@@ -161,52 +171,30 @@ impl Raft {
         drop(voted_for);
 
         let last_log_entry = self.logs.last();
-        let vote_replies: Vec<_> = join_all(self.peer_ids().iter().map(|&peer_id| {
+        let vote_replies:JoinHandle<Result<RequestVoteReply>> = join!(self.peer_ids().iter().map(|&peer_id| async {
             let args = RequestVoteArgs {
                 term: *self.current_term.lock().unwrap(),
                 candidate_id: self.id,
                 last_log_index: last_log_entry.log_index,
                 last_log_term: last_log_entry.log_term,
             };
-            self.peers[&peer_id].request_vote(args)
-        }))
-        .await;
-        vote_replies.into_iter().filter_map(Result::ok).collect()
+            self.peers.get(&peer_id).unwrap().request_vote(args,self.config.rpc_timeout).await
+        }));
+
+        vote_replies.await.into_iter().filter_map(Result::ok).collect()
     }
-}
 
-#[derive(Serialize, Deserialize)]
-pub struct AppendEntriesArgs {
-    // leader term
-    term: u32,
-    // leader id
-    leader_id: u32,
-    // The index of the log entry immediately preceding the new log entry
-    prev_log_index: u32,
-    // The term of the log entry immediately preceding the new log entry
-    prev_log_term: u32,
-    // If it is used as a heartbeat, the log entry is empty
-    entries: Vec<LogEntry>,
-    // Index of the leader's highest known log entries that have been submitted
-    leader_commit: u32,
-}
+    fn majority_index(&self, match_index: &HashMap<u64, u64>) -> u64 {
+        let mut arr: Vec<_> = match_index.values().cloned().collect();
+        arr.sort();
+        arr[arr.len() / 2]
+    }
 
-#[derive(Serialize, Deserialize)]
-pub struct AppendEntriesReply {
-    term: u32,
-    success: bool,
-}
+    fn peer_ids(&self) -> Vec<u64> {
+        self.peers.keys().cloned().collect()
+    }
 
-#[derive(Serialize, Deserialize)]
-pub struct RequestVoteArgs {
-    term: u32,
-    candidate_id: u32,
-    last_log_index: u32,
-    last_log_term: u32,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RequestVoteReply {
-    term: u32,
-    vote_granted: bool,
+    fn quorum_size(&self) -> usize {
+        self.peers.len() / 2 + 1
+    }
 }

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::logs::LogEntry;
+use  crate::rafts::logs::LogEntry;
 
 pub trait Storage {
     fn last_index(&self) -> u32;
